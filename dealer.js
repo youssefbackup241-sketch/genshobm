@@ -12,8 +12,8 @@ const client = new Client({
     partials: [Partials.Channel, Partials.GuildMember, Partials.User]
 });
 
-// HARDCODED TOKEN AS REQUESTED
-const TOKEN = "DEALER_TOKEN";
+// TOKEN FROM ENVIRONMENT VARIABLE
+const TOKEN = process.env.DISCORD_TOKEN;
 
 const DEALER_DB = './dealer_db.json';
 let economyData = { users: {}, shop: { items: [], lastRotation: 0 } };
@@ -136,20 +136,49 @@ client.on('messageCreate', async msg => {
                 })))
         );
         return msg.reply({ embeds: [embed], components: [row] });
-    } else if (cmd === 'addryo' || cmd === 'removeryo' || cmd === 'rotateshop') {
+    } else if (cmd === 'bmcmd') {
+        const embed = new EmbedBuilder().setTitle("🌑 BLACK MARKET COMMANDS").setColor(0x000000)
+            .addFields(
+                { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!inv` - View your items" },
+                { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
+            );
+        return msg.reply({ embeds: [embed] });
+    } else if (cmd === 'addryo' || cmd === 'removeryo' || cmd === 'rotateshop' || cmd === 'wipeinv' || cmd === 'stock') {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
+        
         if (cmd === 'rotateshop') { 
             rotateShop(); 
             return msg.reply("✅ Shop has been forcefully rotated!"); 
+        } else if (cmd === 'stock') {
+            const embed = new EmbedBuilder().setTitle("📦 BLACK MARKET FULL STOCK").setColor(0x000000).setDescription("List of all possible items in the database:");
+            for (const [category, items] of Object.entries(ITEMS)) {
+                const itemList = items.map(it => `${it.emoji} **${it.name}** - ${it.price.toLocaleString()} Ryo`).join('\n');
+                embed.addFields({ name: category, value: itemList || 'None' });
+            }
+            return msg.reply({ embeds: [embed] });
+        } else {
+            const target = await findUser(msg, args);
+            if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
+            ensureUser(target.id);
+            
+            if (cmd === 'addryo') {
+                const amount = parseInt(args[1]);
+                if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+                economyData.users[target.id].ryo += amount;
+                saveData();
+                return msg.reply(`✅ Added **${amount.toLocaleString()} Ryo** to **${target.username}**.`);
+            } else if (cmd === 'removeryo') {
+                const amount = parseInt(args[1]);
+                if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+                economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
+                saveData();
+                return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
+            } else if (cmd === 'wipeinv') {
+                economyData.users[target.id].inventory = [];
+                saveData();
+                return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
+            }
         }
-        const target = await findUser(msg, args);
-        const amount = parseInt(args[1]);
-        if (!target || isNaN(amount)) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
-        ensureUser(target.id);
-        if (cmd === 'addryo') economyData.users[target.id].ryo += amount;
-        else economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
-        saveData();
-        return msg.reply(`✅ Updated **${target.username}**'s balance.`);
     }
 });
 
