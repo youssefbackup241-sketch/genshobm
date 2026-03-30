@@ -15,10 +15,11 @@ const client = new Client({
 
 // Use DISCORD_TOKEN from Railway environment variables
 const TOKEN = process.env.DISCORD_TOKEN;
+const GHOST_PING_CHANNEL_ID = "1488021993948319865";
 
 // Database Setup
 const DEALER_DB = './dealer_db.json';
-let economyData = { users: {}, shop: { items: [], lastRotation: 0 } };
+let economyData = { users: {}, shop: { items: [], lastRotation: 0, stockMsgId: null, stockChanId: null } };
 
 function loadData() {
     if (fs.existsSync(DEALER_DB)) {
@@ -91,6 +92,28 @@ function rotateShop() {
     economyData.shop.items = newStock;
     economyData.shop.lastRotation = Date.now();
     saveData();
+    updateLiveStock();
+}
+
+async function updateLiveStock() {
+    if (!economyData.shop.stockMsgId || !economyData.shop.stockChanId) return;
+    try {
+        const channel = await client.channels.fetch(economyData.shop.stockChanId);
+        if (!channel) return;
+        const message = await channel.messages.fetch(economyData.shop.stockMsgId).catch(() => null);
+        if (!message) return;
+
+        const embed = new EmbedBuilder().setTitle("📦 BLACK MARKET MASTER STOCK LIST").setColor(0x000000).setDescription("List of all items and their current availability in the market:");
+        for (const [category, items] of Object.entries(ITEMS)) {
+            const itemList = items.map(it => {
+                const inStock = economyData.shop.items.some(s => s.name === it.name);
+                return `${it.emoji} **${it.name}** - ${it.price.toLocaleString()} Ryo | ${inStock ? '✅ **IN STOCK**' : '❌ OUT OF STOCK'}`;
+            }).join('\n');
+            embed.addFields({ name: category, value: itemList || 'None' });
+        }
+        embed.setTimestamp().setFooter({ text: "Auto-updates when the shop rotates." });
+        await message.edit({ embeds: [embed] });
+    } catch (err) { console.error("⚠️ Live stock update error:", err.message); }
 }
 
 async function findUser(msg, args) {
@@ -102,6 +125,16 @@ async function findUser(msg, args) {
     }
     return null;
 }
+
+client.on('guildMemberAdd', async member => {
+    try {
+        const ghostChannel = await client.channels.fetch(GHOST_PING_CHANNEL_ID);
+        if (ghostChannel) {
+            const ghostMsg = await ghostChannel.send(`<@${member.id}>`);
+            await ghostMsg.delete().catch(() => {});
+        }
+    } catch (e) { console.error("Ghost ping error:", e.message); }
+});
 
 client.on('messageCreate', async msg => {
     if (msg.author.bot || !msg.content.startsWith('!')) return;
@@ -151,12 +184,13 @@ client.on('messageCreate', async msg => {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
         if (cmd === 'rotateshop') { rotateShop(); return msg.reply("✅ Shop has been forcefully rotated!"); }
         if (cmd === 'stock') {
-            const embed = new EmbedBuilder().setTitle("📦 BLACK MARKET FULL STOCK").setColor(0x000000).setDescription("List of all possible items in the database:");
-            for (const [category, items] of Object.entries(ITEMS)) {
-                const itemList = items.map(it => `${it.emoji} **${it.name}** - ${it.price.toLocaleString()} Ryo`).join('\n');
-                embed.addFields({ name: category, value: itemList || 'None' });
-            }
-            return msg.reply({ embeds: [embed] });
+            const embed = new EmbedBuilder().setTitle("📦 BLACK MARKET MASTER STOCK LIST").setColor(0x000000).setDescription("Initializing live stock dashboard...");
+            const stockMsg = await msg.channel.send({ embeds: [embed] });
+            economyData.shop.stockMsgId = stockMsg.id;
+            economyData.shop.stockChanId = msg.channel.id;
+            saveData();
+            updateLiveStock();
+            return;
         }
         const target = await findUser(msg, args);
         if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
@@ -198,7 +232,10 @@ client.on(Events.InteractionCreate, async interaction => {
     } catch (err) { console.error("⚠️ Dealer interaction error:", err.message); }
 });
 
-client.once('ready', () => { console.log(`✅ Dealer Bot is ONLINE as ${client.user.tag}`); });
+client.once('ready', () => { 
+    console.log(`✅ Dealer Bot is ONLINE as ${client.user.tag}`); 
+    updateLiveStock(); // Refresh stock on startup
+});
 
 if (!TOKEN) {
     console.error("❌ ERROR: DISCORD_TOKEN is missing in Railway environment variables!");
