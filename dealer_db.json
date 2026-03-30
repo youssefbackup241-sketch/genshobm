@@ -1,0 +1,59 @@
+{
+  "users": {
+    "937095636485042196": {
+      "ryo": 0,
+      "inventory": []
+    },
+    "882026301215621162": {
+      "ryo": 0,
+      "inventory": []
+    }
+  },
+  "shop": {
+    "items": [
+      {
+        "name": "Dagai",
+        "price": 8000,
+        "rarity": "Common",
+        "emoji": "◻️"
+      },
+      {
+        "name": "Senko Kunai",
+        "price": 350000,
+        "rarity": "Mythical",
+        "emoji": "🔴"
+      },
+      {
+        "name": "Azarashi Kunai",
+        "price": 4000,
+        "rarity": "Common",
+        "emoji": "◻️"
+      },
+      {
+        "name": "Bomb Blade SL2",
+        "price": 145000,
+        "rarity": "Legendary",
+        "emoji": "🔸"
+      },
+      {
+        "name": "Heroes Water",
+        "price": 250000,
+        "rarity": "Mythical",
+        "emoji": "💧"
+      },
+      {
+        "name": "Health Stim",
+        "price": 125000,
+        "rarity": "Epic",
+        "emoji": "💉"
+      },
+      {
+        "name": "Gingerbread Man",
+        "price": 150000,
+        "rarity": "Legendary",
+        "emoji": "🍪"
+      }
+    ],
+    "lastRotation": 1774836792156
+  }
+}
