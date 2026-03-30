@@ -1,7 +1,8 @@
 // dealer.js - Genshō Black Market Dealer
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, StringSelectMenuBuilder, PermissionsBitField, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, Events, StringSelectMenuBuilder, PermissionsBitField } = require('discord.js');
 const fs = require('fs');
 
+// Initialize Discord Client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds, 
@@ -12,17 +13,36 @@ const client = new Client({
     partials: [Partials.Channel, Partials.GuildMember, Partials.User]
 });
 
-// TOKEN FROM ENVIRONMENT VARIABLE
+// Use DISCORD_TOKEN from Railway environment variables
 const TOKEN = process.env.DISCORD_TOKEN;
 
+// Database Setup
 const DEALER_DB = './dealer_db.json';
 let economyData = { users: {}, shop: { items: [], lastRotation: 0 } };
-if (fs.existsSync(DEALER_DB)) {
+
+function loadData() {
+    if (fs.existsSync(DEALER_DB)) {
+        try {
+            const fileContent = fs.readFileSync(DEALER_DB, 'utf8');
+            if (fileContent) economyData = JSON.parse(fileContent);
+        } catch (e) {
+            console.error("⚠️ Error loading database, starting fresh:", e.message);
+        }
+    }
+}
+loadData();
+
+function saveData() { 
     try {
-        const fileContent = fs.readFileSync(DEALER_DB, 'utf8');
-        economyData = fileContent ? JSON.parse(fileContent) : { users: {}, shop: { items: [], lastRotation: 0 } };
+        fs.writeFileSync(DEALER_DB, JSON.stringify(economyData, null, 2)); 
     } catch (e) {
-        console.error("Failed to parse dealer_db.json, starting fresh.", e);
+        console.error("⚠️ Error saving database:", e.message);
+    }
+}
+
+function ensureUser(id) {
+    if (!economyData.users[id]) {
+        economyData.users[id] = { ryo: 0, inventory: [] };
     }
 }
 
@@ -51,17 +71,6 @@ const ITEMS = {
 const CHANCES = { MYTHICAL: 5, LEGENDARY: 10, EPIC: 20, RARE: 35, COMMON: 65 };
 const RARITY_COLORS = { Mythical: 0xff0000, Legendary: 0xffa500, Epic: 0x9400d3, Rare: 0x1e90ff, Common: 0x808080 };
 
-// ---------------- UTILS ----------------
-function saveData() { 
-    fs.writeFileSync(DEALER_DB, JSON.stringify(economyData, null, 2)); 
-}
-
-function ensureUser(id) {
-    if (!economyData.users[id]) {
-        economyData.users[id] = { ryo: 0, inventory: [] };
-    }
-}
-
 function rotateShop() {
     const newStock = [];
     for (let i = 0; i < 4; i++) {
@@ -89,16 +98,11 @@ async function findUser(msg, args) {
     if (mention) return mention;
     const id = args[0];
     if (id && /^\d{17,20}$/.test(id)) {
-        try { 
-            return await client.users.fetch(id); 
-        } catch (err) { 
-            return null; 
-        }
+        try { return await client.users.fetch(id); } catch (err) { return null; }
     }
     return null;
 }
 
-// ---------------- COMMAND HANDLER ----------------
 client.on('messageCreate', async msg => {
     if (msg.author.bot || !msg.content.startsWith('!')) return;
     const parts = msg.content.slice(1).split(' ');
@@ -143,46 +147,40 @@ client.on('messageCreate', async msg => {
                 { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
             );
         return msg.reply({ embeds: [embed] });
-    } else if (cmd === 'addryo' || cmd === 'removeryo' || cmd === 'rotateshop' || cmd === 'wipeinv' || cmd === 'stock') {
+    } else if (['addryo', 'removeryo', 'rotateshop', 'wipeinv', 'stock'].includes(cmd)) {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
-        
-        if (cmd === 'rotateshop') { 
-            rotateShop(); 
-            return msg.reply("✅ Shop has been forcefully rotated!"); 
-        } else if (cmd === 'stock') {
+        if (cmd === 'rotateshop') { rotateShop(); return msg.reply("✅ Shop has been forcefully rotated!"); }
+        if (cmd === 'stock') {
             const embed = new EmbedBuilder().setTitle("📦 BLACK MARKET FULL STOCK").setColor(0x000000).setDescription("List of all possible items in the database:");
             for (const [category, items] of Object.entries(ITEMS)) {
                 const itemList = items.map(it => `${it.emoji} **${it.name}** - ${it.price.toLocaleString()} Ryo`).join('\n');
                 embed.addFields({ name: category, value: itemList || 'None' });
             }
             return msg.reply({ embeds: [embed] });
-        } else {
-            const target = await findUser(msg, args);
-            if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
-            ensureUser(target.id);
-            
-            if (cmd === 'addryo') {
-                const amount = parseInt(args[1]);
-                if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
-                economyData.users[target.id].ryo += amount;
-                saveData();
-                return msg.reply(`✅ Added **${amount.toLocaleString()} Ryo** to **${target.username}**.`);
-            } else if (cmd === 'removeryo') {
-                const amount = parseInt(args[1]);
-                if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
-                economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
-                saveData();
-                return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
-            } else if (cmd === 'wipeinv') {
-                economyData.users[target.id].inventory = [];
-                saveData();
-                return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
-            }
+        }
+        const target = await findUser(msg, args);
+        if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
+        ensureUser(target.id);
+        if (cmd === 'addryo') {
+            const amount = parseInt(args[1]);
+            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+            economyData.users[target.id].ryo += amount;
+            saveData();
+            return msg.reply(`✅ Added **${amount.toLocaleString()} Ryo** to **${target.username}**.`);
+        } else if (cmd === 'removeryo') {
+            const amount = parseInt(args[1]);
+            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+            economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
+            saveData();
+            return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
+        } else if (cmd === 'wipeinv') {
+            economyData.users[target.id].inventory = [];
+            saveData();
+            return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
         }
     }
 });
 
-// ---------------- INTERACTION HANDLER ----------------
 client.on(Events.InteractionCreate, async interaction => {
     try {
         if (!interaction.isStringSelectMenu() || interaction.customId !== 'buy_item') return;
@@ -197,8 +195,17 @@ client.on(Events.InteractionCreate, async interaction => {
         saveData();
         const buyEmbed = new EmbedBuilder().setTitle("🤝 DEAL COMPLETE").setDescription(`You purchased **${item.name}** for **${item.price.toLocaleString()} Ryo**.`).addFields({ name: 'Remaining Balance', value: `🪙 **${economyData.users[id].ryo.toLocaleString()} Ryo**` }).setColor(RARITY_COLORS[item.rarity] || 0x00ff00).setFooter({ text: "The Dealer nods in approval." });
         await interaction.reply({ embeds: [buyEmbed], ephemeral: true });
-    } catch (err) { console.error("Error in dealer interaction:", err); }
+    } catch (err) { console.error("⚠️ Dealer interaction error:", err.message); }
 });
 
-client.once('ready', () => { console.log(`Dealer Bot ready!`); });
-client.login(TOKEN).catch(err => { console.error("Dealer Bot login failed:", err); });
+client.once('ready', () => { console.log(`✅ Dealer Bot is ONLINE as ${client.user.tag}`); });
+
+if (!TOKEN) {
+    console.error("❌ ERROR: DISCORD_TOKEN is missing in Railway environment variables!");
+    process.exit(1);
+}
+
+client.login(TOKEN).catch(err => {
+    console.error("❌ ERROR: Login failed. Check your token and Intents!");
+    console.error(err.message);
+});
