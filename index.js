@@ -149,6 +149,28 @@ client.on('messageCreate', async msg => {
         ensureUser(target.id);
         const embed = new EmbedBuilder().setTitle("💰 RYO BALANCE").setDescription(`**${target.username}** currently holds:`).addFields({ name: '\u200B', value: `🪙 **${economyData.users[target.id].ryo.toLocaleString()} Ryo**` }).setColor(0xffd700).setThumbnail(target.displayAvatarURL());
         return msg.reply({ embeds: [embed] });
+    } else if (cmd === 'baltop') {
+        const topUsers = Object.entries(economyData.users)
+            .map(([id, data]) => ({ id, ryo: data.ryo }))
+            .sort((a, b) => b.ryo - a.ryo)
+            .slice(0, 10);
+
+        const embed = new EmbedBuilder()
+            .setTitle("🏆 RYO LEADERBOARD - TOP 10")
+            .setColor(0xffd700)
+            .setDescription("The wealthiest individuals in the server:");
+
+        let leaderboard = "";
+        for (let i = 0; i < topUsers.length; i++) {
+            try {
+                const user = await client.users.fetch(topUsers[i].id);
+                leaderboard += `\`${i + 1}.\` **${user.username}** — ${topUsers[i].ryo.toLocaleString()} Ryo\n`;
+            } catch (e) {
+                leaderboard += `\`${i + 1}.\` **Unknown User** — ${topUsers[i].ryo.toLocaleString()} Ryo\n`;
+            }
+        }
+        embed.addFields({ name: '\u200B', value: leaderboard || "No data available." });
+        return msg.reply({ embeds: [embed] });
     } else if (cmd === 'inv') {
         const inv = economyData.users[id].inventory;
         if (inv.length === 0) return msg.reply("🎒 Your inventory is empty!");
@@ -176,7 +198,7 @@ client.on('messageCreate', async msg => {
     } else if (cmd === 'bmcmd') {
         const embed = new EmbedBuilder().setTitle("🌑 BLACK MARKET COMMANDS").setColor(0x000000)
             .addFields(
-                { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!inv` - View your items" },
+                { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items" },
                 { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
             );
         return msg.reply({ embeds: [embed] });
