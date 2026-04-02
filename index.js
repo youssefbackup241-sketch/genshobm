@@ -76,6 +76,9 @@ const ITEMS = {
 const CHANCES = { MYTHICAL: 5, LEGENDARY: 10, EPIC: 20, RARE: 35, COMMON: 65 };
 const RARITY_COLORS = { Mythical: 0xff0000, Legendary: 0xffa500, Epic: 0x9400d3, Rare: 0x1e90ff, Common: 0x808080 };
 
+// ----- GAMBLING HELPERS -----
+const activeGames = new Set();
+
 function rotateShop() {
     const newStock = [];
     for (let i = 0; i < 4; i++) {
@@ -203,6 +206,7 @@ client.on('messageCreate', async msg => {
         const embed = new EmbedBuilder().setTitle("🌑 BLACK MARKET COMMANDS").setColor(0x000000)
             .addFields(
                 { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items" },
+                { name: '🎰 Gambling', value: "`!bj [bet]` - Blackjack\n`!slots [bet]` - Casino Slots\n`!horse [bet] [1-5]` - Horse Racing\n`!race [bet] [1-5]` - Car Racing\n`!roulette [bet] [space]` - Roulette" },
                 { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items\n`!familysetup` - Manage family pools" }
             );
         return msg.reply({ embeds: [embed] });
@@ -253,13 +257,245 @@ client.on('messageCreate', async msg => {
             return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
         }
     }
+
+    // ----- GAMBLING COMMANDS -----
+    if (['bj', 'slots', 'horse', 'race', 'roulette'].includes(cmd)) {
+        if (activeGames.has(id)) return msg.reply("❌ You already have an active game!");
+        const bet = parseInt(args[0]);
+        if (isNaN(bet) || bet < 100) return msg.reply("❌ Minimum bet is **100 Ryo**.");
+        if (economyData.users[id].ryo < bet) return msg.reply("❌ You don't have enough Ryo!");
+
+        if (cmd === 'bj') {
+            activeGames.add(id);
+            economyData.users[id].ryo -= bet;
+            saveData();
+
+            const deck = [];
+            const suits = ['♠️', '♥️', '♦️', '♣️'];
+            const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+            for (const s of suits) for (const v of values) deck.push({ s, v });
+
+            const draw = () => deck.splice(Math.floor(Math.random() * deck.length), 1)[0];
+            const getVal = (hand) => {
+                let total = 0, aces = 0;
+                hand.forEach(c => {
+                    if (['J', 'Q', 'K'].includes(c.v)) total += 10;
+                    else if (c.v === 'A') { total += 11; aces++; }
+                    else total += parseInt(c.v);
+                });
+                while (total > 21 && aces > 0) { total -= 10; aces--; }
+                return total;
+            };
+
+            const playerHand = [draw(), draw()];
+            const dealerHand = [draw(), draw()];
+
+            const bjEmbed = (done = false) => {
+                const embed = new EmbedBuilder().setTitle("🃏 BLACKJACK").setColor(0x000000)
+                    .addFields(
+                        { name: `Your Hand (${getVal(playerHand)})`, value: playerHand.map(c => `\`${c.v}${c.s}\``).join(' '), inline: true },
+                        { name: `Dealer Hand (${done ? getVal(dealerHand) : '?'})`, value: done ? dealerHand.map(c => `\`${c.v}${c.s}\``).join(' ') : `\`${dealerHand[0].v}${dealerHand[0].s}\` \`??\``, inline: true }
+                    );
+                return embed;
+            };
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`bj_hit_${id}_${bet}`).setLabel('Hit').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId(`bj_stand_${id}_${bet}`).setLabel('Stand').setStyle(ButtonStyle.Secondary)
+            );
+
+            const bjMsg = await msg.reply({ embeds: [bjEmbed()], components: [row] });
+
+            if (getVal(playerHand) === 21) {
+                activeGames.delete(id);
+                economyData.users[id].ryo += Math.floor(bet * 2.5);
+                saveData();
+                return bjMsg.edit({ embeds: [bjEmbed(true).setDescription("✨ **Blackjack! You win!**")], components: [] });
+            }
+        } else if (cmd === 'slots') {
+            economyData.users[id].ryo -= bet;
+            const emojis = ['🍒', '🍋', '🍇', '🔔', '💎', '7️⃣'];
+            const roll = [emojis[Math.floor(Math.random() * emojis.length)], emojis[Math.floor(Math.random() * emojis.length)], emojis[Math.floor(Math.random() * emojis.length)]];
+            
+            let win = 0;
+            if (roll[0] === roll[1] && roll[1] === roll[2]) {
+                if (roll[0] === '7️⃣') win = bet * 10;
+                else if (roll[0] === '💎') win = bet * 7;
+                else win = bet * 5;
+            } else if (roll[0] === roll[1] || roll[1] === roll[2] || roll[0] === roll[2]) {
+                win = Math.floor(bet * 1.5);
+            }
+
+            economyData.users[id].ryo += win;
+            saveData();
+
+            const slotEmbed = new EmbedBuilder().setTitle("🎰 CASINO SLOTS").setColor(win > 0 ? 0x00ff00 : 0xff0000)
+                .setDescription(`**[ ${roll.join(' | ')} ]**\n\n${win > 0 ? `💰 You won **${win.toLocaleString()} Ryo**!` : "❌ Better luck next time!"}`)
+                .setFooter({ text: `Balance: ${economyData.users[id].ryo.toLocaleString()} Ryo` });
+            return msg.reply({ embeds: [slotEmbed] });
+        } else if (cmd === 'horse' || cmd === 'race') {
+            const choice = parseInt(args[1]);
+            if (isNaN(choice) || choice < 1 || choice > 5) return msg.reply(`❌ Choose a ${cmd === 'horse' ? 'horse' : 'car'} (1-5)!`);
+            
+            economyData.users[id].ryo -= bet;
+            const winner = Math.floor(Math.random() * 5) + 1;
+            const isWin = choice === winner;
+            const winAmt = bet * 4;
+
+            if (isWin) economyData.users[id].ryo += winAmt;
+            saveData();
+
+            const raceEmbed = new EmbedBuilder().setTitle(cmd === 'horse' ? "🏇 HORSE RACING" : "🏎️ CAR RACING").setColor(isWin ? 0x00ff00 : 0xff0000)
+                .setDescription(`The race is on...\n\n🏁 Winner: **#${winner}**\nYour Choice: **#${choice}**\n\n${isWin ? `💰 You won **${winAmt.toLocaleString()} Ryo**!` : "❌ Your choice lost."}`);
+            return msg.reply({ embeds: [raceEmbed] });
+        } else if (cmd === 'roulette') {
+            const space = args[1]?.toLowerCase();
+            if (!space) return msg.reply("❌ Choose a space: `red`, `black`, `even`, `odd`, or a number `0-36`.");
+            
+            economyData.users[id].ryo -= bet;
+            const result = Math.floor(Math.random() * 37);
+            const red = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36];
+            const isRed = red.includes(result);
+            
+            let isWin = false;
+            let multiplier = 2;
+
+            if (space === 'red' && isRed) isWin = true;
+            else if (space === 'black' && !isRed && result !== 0) isWin = true;
+            else if (space === 'even' && result % 2 === 0 && result !== 0) isWin = true;
+            else if (space === 'odd' && result % 2 !== 0) isWin = true;
+            else if (parseInt(space) === result) { isWin = true; multiplier = 35; }
+
+            const winAmt = isWin ? bet * multiplier : 0;
+            economyData.users[id].ryo += winAmt;
+            saveData();
+
+            const color = result === 0 ? '🟢' : (isRed ? '🔴' : '⚫');
+            const roulEmbed = new EmbedBuilder().setTitle("🎡 ROULETTE").setColor(isWin ? 0x00ff00 : 0xff0000)
+                .setDescription(`The ball landed on: ${color} **${result}**\n\n${isWin ? `💰 You won **${winAmt.toLocaleString()} Ryo**!` : "❌ You lost your bet."}`);
+            return msg.reply({ embeds: [roulEmbed] });
+        }
+    }
 });
 
 client.on(Events.InteractionCreate, async interaction => {
     try {
+        const id = interaction.user.id;
+        if (interaction.isButton()) {
+            if (interaction.customId.startsWith('bj_')) {
+                const [_, action, originalId, betStr] = interaction.customId.split('_');
+                if (id !== originalId) return interaction.reply({ content: "Unauthorized!", ephemeral: true });
+                const bet = parseInt(betStr);
+                
+                // Need to reconstruct game state from embed since we don't have a persistent game object
+                const embed = interaction.message.embeds[0];
+                const playerHandStr = embed.fields[0].value;
+                const dealerHandStr = embed.fields[1].value;
+                
+                const parseHand = (str) => {
+                    const cards = [];
+                    const matches = str.match(/`(\d+|[AJQK])(♠️|♥️|♦️|♣️)`/g);
+                    if (matches) {
+                        matches.forEach(m => {
+                            const clean = m.replace(/`/g, '');
+                            const s = clean.slice(-2);
+                            const v = clean.slice(0, -2);
+                            cards.push({ v, s });
+                        });
+                    }
+                    return cards;
+                };
+
+                const playerHand = parseHand(playerHandStr);
+                const dealerHand = parseHand(dealerHandStr);
+                
+                const deck = [];
+                const suits = ['♠️', '♥️', '♦️', '♣️'];
+                const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
+                for (const s of suits) for (const v of values) deck.push({ s, v });
+                // Filter out cards already in play
+                [...playerHand, ...dealerHand].forEach(c => {
+                    const idx = deck.findIndex(dc => dc.v === c.v && dc.s === c.s);
+                    if (idx !== -1) deck.splice(idx, 1);
+                });
+
+                const draw = () => deck.splice(Math.floor(Math.random() * deck.length), 1)[0];
+                const getVal = (hand) => {
+                    let total = 0, aces = 0;
+                    hand.forEach(c => {
+                        if (['J', 'Q', 'K'].includes(c.v)) total += 10;
+                        else if (c.v === 'A') { total += 11; aces++; }
+                        else total += parseInt(c.v);
+                    });
+                    while (total > 21 && aces > 0) { total -= 10; aces--; }
+                    return total;
+                };
+
+                const bjEmbedUpdate = (done = false) => {
+                    const e = new EmbedBuilder().setTitle("🃏 BLACKJACK").setColor(0x000000)
+                        .addFields(
+                            { name: `Your Hand (${getVal(playerHand)})`, value: playerHand.map(c => `\`${c.v}${c.s}\``).join(' '), inline: true },
+                            { name: `Dealer Hand (${done ? getVal(dealerHand) : '?'})`, value: done ? dealerHand.map(c => `\`${c.v}${c.s}\``).join(' ') : `\`${dealerHand[0].v}${dealerHand[0].s}\` \`??\``, inline: true }
+                        );
+                    return e;
+                };
+
+                if (action === 'hit') {
+                    playerHand.push(draw());
+                    const val = getVal(playerHand);
+                    if (val > 21) {
+                        activeGames.delete(id);
+                        return interaction.update({ embeds: [bjEmbedUpdate(true).setDescription("💥 **Bust! You lost.**")], components: [] });
+                    }
+                    return interaction.update({ embeds: [bjEmbedUpdate()] });
+                } else if (action === 'stand') {
+                    activeGames.delete(id);
+                    while (getVal(dealerHand) < 17) dealerHand.push(draw());
+                    const pVal = getVal(playerHand);
+                    const dVal = getVal(dealerHand);
+                    
+                    let msg = "";
+                    if (dVal > 21 || pVal > dVal) {
+                        economyData.users[id].ryo += bet * 2;
+                        msg = "🏆 **You win!**";
+                    } else if (pVal === dVal) {
+                        economyData.users[id].ryo += bet;
+                        msg = "🤝 **Push. Bet returned.**";
+                    } else {
+                        msg = "❌ **Dealer wins.**";
+                    }
+                    saveData();
+                    return interaction.update({ embeds: [bjEmbedUpdate(true).setDescription(msg)], components: [] });
+                }
+            }
+
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "❌ Staff only!", ephemeral: true });
+            if (interaction.customId === 'family_create') {
+                await interaction.reply({ content: "Type the name of the new family to create:", ephemeral: true });
+                const filter = m => m.author.id === interaction.user.id;
+                const collector = interaction.channel.createMessageCollector({ filter, time: 30000, max: 1 });
+                collector.on('collect', m => {
+                    const name = m.content.trim();
+                    if (economyData.families[name]) return m.reply("❌ That family already exists!");
+                    economyData.families[name] = { ryo: 0, items: [], members: [] };
+                    saveData();
+                    m.reply(`✅ Created family: **${name}**!`);
+                });
+            } else if (interaction.customId === 'family_manage') {
+                const families = Object.keys(economyData.families);
+                if (families.length === 0) return interaction.reply({ content: "No families setup yet!", ephemeral: true });
+                const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('family_select_manage').setPlaceholder('Choose a family').addOptions(families.map(f => ({ label: f, value: f }))));
+                await interaction.update({ content: "Select a family to view stats:", components: [row], embeds: [] });
+            } else if (interaction.customId === 'family_access') {
+                const families = Object.keys(economyData.families);
+                if (families.length === 0) return interaction.reply({ content: "No families setup yet!", ephemeral: true });
+                const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('family_select_access').setPlaceholder('Choose a family').addOptions(families.map(f => ({ label: f, value: f }))));
+                await interaction.update({ content: "Select a family to manage access:", components: [row], embeds: [] });
+            }
+        }
+
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId === 'buy_item') {
-                const id = interaction.user.id;
                 ensureUser(id);
                 const itemIndex = parseInt(interaction.values[0]);
                 const item = economyData.shop.items[itemIndex];
@@ -301,35 +537,11 @@ client.on(Events.InteractionCreate, async interaction => {
                     saveData();
                 });
             }
-        } else if (interaction.isButton()) {
-            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "❌ Staff only!", ephemeral: true });
-            if (interaction.customId === 'family_create') {
-                await interaction.reply({ content: "Type the name of the new family to create:", ephemeral: true });
-                const filter = m => m.author.id === interaction.user.id;
-                const collector = interaction.channel.createMessageCollector({ filter, time: 30000, max: 1 });
-                collector.on('collect', m => {
-                    const name = m.content.trim();
-                    if (economyData.families[name]) return m.reply("❌ That family already exists!");
-                    economyData.families[name] = { ryo: 0, items: [], members: [] };
-                    saveData();
-                    m.reply(`✅ Created family: **${name}**!`);
-                });
-            } else if (interaction.customId === 'family_manage') {
-                const families = Object.keys(economyData.families);
-                if (families.length === 0) return interaction.reply({ content: "No families setup yet!", ephemeral: true });
-                const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('family_select_manage').setPlaceholder('Choose a family').addOptions(families.map(f => ({ label: f, value: f }))));
-                await interaction.update({ content: "Select a family to view stats:", components: [row], embeds: [] });
-            } else if (interaction.customId === 'family_access') {
-                const families = Object.keys(economyData.families);
-                if (families.length === 0) return interaction.reply({ content: "No families setup yet!", ephemeral: true });
-                const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('family_select_access').setPlaceholder('Choose a family').addOptions(families.map(f => ({ label: f, value: f }))));
-                await interaction.update({ content: "Select a family to manage access:", components: [row], embeds: [] });
-            }
         }
     } catch (err) { console.error("⚠️ Dealer interaction error:", err.message); }
 });
 
-client.once('ready', () => { 
+client.once(Events.ClientReady, () => { 
     console.log(`✅ Dealer Bot is ONLINE as ${client.user.tag}`); 
     updateLiveStock(); 
 });
