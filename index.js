@@ -19,7 +19,26 @@ const GHOST_PING_CHANNEL_ID = "1488021993948319865";
 
 // Database Setup
 const DEALER_DB = './dealer_db.json';
-let economyData = { users: {}, families: {}, shop: { items: [], lastRotation: 0, stockMsgId: null, stockChanId: null } };
+let economyData = { 
+    users: {}, 
+    families: {}, 
+    shop: { items: [], lastRotation: 0, stockMsgId: null, stockChanId: null },
+    markets: { stocks: {}, crypto: {}, lastUpdate: 0 }
+};
+
+// Initial Market Data
+const INITIAL_STOCKS = {
+    "KON": { name: "Konoha Tech", price: 1000, volatility: 0.05 },
+    "SUNA": { name: "Suna Sands", price: 800, volatility: 0.08 },
+    "KIRI": { name: "Kirigakure Mist", price: 1200, volatility: 0.04 },
+    "KUMO": { name: "Kumogakure Cloud", price: 1500, volatility: 0.03 }
+};
+
+const INITIAL_CRYPTO = {
+    "RYO": { name: "RyoCoin", price: 50, volatility: 0.15 },
+    "NIN": { name: "NinjaToken", price: 10, volatility: 0.25 },
+    "CHKR": { name: "ChakraCoin", price: 200, volatility: 0.10 }
+};
 
 function loadData() {
     if (fs.existsSync(DEALER_DB)) {
@@ -27,12 +46,24 @@ function loadData() {
             const fileContent = fs.readFileSync(DEALER_DB, 'utf8');
             if (fileContent) {
                 const parsed = JSON.parse(fileContent);
-                economyData = parsed;
-                if (!economyData.families) economyData.families = {};
+                // Deep merge to preserve data during script updates
+                economyData.users = parsed.users || {};
+                economyData.families = parsed.families || {};
+                economyData.shop = parsed.shop || economyData.shop;
+                economyData.markets = parsed.markets || economyData.markets;
+
+                // Initialize markets if empty
+                if (Object.keys(economyData.markets.stocks).length === 0) economyData.markets.stocks = INITIAL_STOCKS;
+                if (Object.keys(economyData.markets.crypto).length === 0) economyData.markets.crypto = INITIAL_CRYPTO;
             }
         } catch (e) {
             console.error("⚠️ Error loading database, starting fresh:", e.message);
         }
+    } else {
+        // First time setup
+        economyData.markets.stocks = INITIAL_STOCKS;
+        economyData.markets.crypto = INITIAL_CRYPTO;
+        saveData();
     }
 }
 loadData();
@@ -47,8 +78,32 @@ function saveData() {
 
 function ensureUser(id) {
     if (!economyData.users[id]) {
-        economyData.users[id] = { ryo: 0, inventory: [] };
+        economyData.users[id] = { ryo: 0, inventory: [], portfolio: { stocks: {}, crypto: {} }, loan: { amount: 0, interest: 0 } };
     }
+    if (!economyData.users[id].portfolio) {
+        economyData.users[id].portfolio = { stocks: {}, crypto: {} };
+    }
+    if (!economyData.users[id].loan) {
+        economyData.users[id].loan = { amount: 0, interest: 0 };
+    }
+}
+
+// ----- MARKET LOGIC -----
+function updateMarkets() {
+    const now = Date.now();
+    // Update every 30 minutes
+    if (now - economyData.markets.lastUpdate < 30 * 60 * 1000) return;
+
+    for (const [symbol, data] of Object.entries(economyData.markets.stocks)) {
+        const change = (Math.random() * 2 - 1) * data.volatility;
+        data.price = Math.max(10, Math.floor(data.price * (1 + change)));
+    }
+    for (const [symbol, data] of Object.entries(economyData.markets.crypto)) {
+        const change = (Math.random() * 2 - 1) * data.volatility;
+        data.price = Math.max(1, Math.floor(data.price * (1 + change)));
+    }
+    economyData.markets.lastUpdate = now;
+    saveData();
 }
 
 // ----- ITEM DATABASE -----
@@ -150,6 +205,7 @@ client.on('messageCreate', async msg => {
     const args = parts.slice(1);
     const id = msg.author.id;
     ensureUser(id);
+    updateMarkets();
 
     if (cmd === 'ryo') {
         const target = await findUser(msg, args) || msg.author;
@@ -202,12 +258,52 @@ client.on('messageCreate', async msg => {
                 })))
         );
         return msg.reply({ embeds: [embed], components: [row] });
+    } else if (cmd === 'market') {
+        const embed = new EmbedBuilder().setTitle("📈 GENSHŌ FINANCIAL MARKET").setColor(0x2b2d31).setDescription("Invest your Ryo in stocks and crypto. Prices update every 30 minutes.");
+        
+        let stockList = "";
+        for (const [sym, data] of Object.entries(economyData.markets.stocks)) {
+            stockList += `**${sym}** (${data.name}): \`${data.price.toLocaleString()} Ryo\`\n`;
+        }
+        embed.addFields({ name: '📊 Stock Market', value: stockList || "No stocks available." });
+
+        let cryptoList = "";
+        for (const [sym, data] of Object.entries(economyData.markets.crypto)) {
+            cryptoList += `**${sym}** (${data.name}): \`${data.price.toLocaleString()} Ryo\`\n`;
+        }
+        embed.addFields({ name: '🪙 Crypto Market', value: cryptoList || "No crypto available." });
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('market_buy').setLabel('Buy').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('market_sell').setLabel('Sell').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId('market_portfolio').setLabel('My Portfolio').setStyle(ButtonStyle.Primary)
+        );
+
+        return msg.reply({ embeds: [embed], components: [row] });
+    } else if (cmd === 'debt') {
+        const loan = economyData.users[id].loan;
+        if (loan.amount <= 0) return msg.reply("✅ You have no outstanding debt!");
+        
+        const totalDue = Math.floor(loan.amount * (1 + loan.interest / 100));
+        const embed = new EmbedBuilder().setTitle("💸 YOUR DEBT").setColor(0xff0000)
+            .setDescription(`You currently owe the Black Market Dealer:`)
+            .addFields(
+                { name: 'Principal', value: `\`${loan.amount.toLocaleString()} Ryo\``, inline: true },
+                { name: 'Interest Rate', value: `\`${loan.interest}%\``, inline: true },
+                { name: 'Total Due', value: `\`${totalDue.toLocaleString()} Ryo\``, inline: true }
+            );
+        
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('loan_repay_full').setLabel('Repay Full').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('loan_repay_half').setLabel('Repay Half').setStyle(ButtonStyle.Primary)
+        );
+        return msg.reply({ embeds: [embed], components: [row] });
     } else if (cmd === 'bmcmd') {
         const embed = new EmbedBuilder().setTitle("🌑 BLACK MARKET COMMANDS").setColor(0x000000)
             .addFields(
-                { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items" },
+                { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items\n`!market` - Stock & Crypto market\n`!debt` - View/Repay loans" },
                 { name: '🎰 Gambling', value: "`!bj [bet]` - Blackjack\n`!slots [bet]` - Casino Slots\n`!horse [bet] [1-5]` - Horse Racing\n`!race [bet] [1-5]` - Car Racing\n`!roulette [bet] [space]` - Roulette" },
-                { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items\n`!familysetup` - Manage family pools" }
+                { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!loan @User [amt] [int]` - Issue a loan\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items\n`!familysetup` - Manage family pools" }
             );
         return msg.reply({ embeds: [embed] });
     } else if (cmd === 'familysetup') {
@@ -224,7 +320,7 @@ client.on('messageCreate', async msg => {
             new ButtonBuilder().setCustomId('family_access').setLabel('Manage Access').setStyle(ButtonStyle.Secondary).setEmoji('👥')
         );
         return msg.reply({ embeds: [embed], components: [row] });
-    } else if (['addryo', 'removeryo', 'rotateshop', 'wipeinv', 'stock'].includes(cmd)) {
+    } else if (['addryo', 'removeryo', 'rotateshop', 'wipeinv', 'stock', 'loan'].includes(cmd)) {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
         if (cmd === 'rotateshop') { rotateShop(); return msg.reply("✅ Shop has been forcefully rotated!"); }
         if (cmd === 'stock') {
@@ -237,8 +333,9 @@ client.on('messageCreate', async msg => {
             return;
         }
         const target = await findUser(msg, args);
-        if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
+        if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount] [interest (for loans)]\``);
         ensureUser(target.id);
+        
         if (cmd === 'addryo') {
             const amount = parseInt(args[1]);
             if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
@@ -251,6 +348,14 @@ client.on('messageCreate', async msg => {
             economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
             saveData();
             return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
+        } else if (cmd === 'loan') {
+            const amount = parseInt(args[1]);
+            const interest = parseInt(args[2]);
+            if (isNaN(amount) || isNaN(interest)) return msg.reply("❌ Usage: `!loan @User [amount] [interest%]`");
+            economyData.users[target.id].loan = { amount, interest };
+            economyData.users[target.id].ryo += amount;
+            saveData();
+            return msg.reply(`💸 Issued a loan of **${amount.toLocaleString()} Ryo** to **${target.username}** with **${interest}%** interest.`);
         } else if (cmd === 'wipeinv') {
             economyData.users[target.id].inventory = [];
             saveData();
@@ -387,7 +492,6 @@ client.on(Events.InteractionCreate, async interaction => {
                 if (id !== originalId) return interaction.reply({ content: "Unauthorized!", ephemeral: true });
                 const bet = parseInt(betStr);
                 
-                // Need to reconstruct game state from embed since we don't have a persistent game object
                 const embed = interaction.message.embeds[0];
                 const playerHandStr = embed.fields[0].value;
                 const dealerHandStr = embed.fields[1].value;
@@ -413,7 +517,6 @@ client.on(Events.InteractionCreate, async interaction => {
                 const suits = ['♠️', '♥️', '♦️', '♣️'];
                 const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
                 for (const s of suits) for (const v of values) deck.push({ s, v });
-                // Filter out cards already in play
                 [...playerHand, ...dealerHand].forEach(c => {
                     const idx = deck.findIndex(dc => dc.v === c.v && dc.s === c.s);
                     if (idx !== -1) deck.splice(idx, 1);
@@ -467,9 +570,74 @@ client.on(Events.InteractionCreate, async interaction => {
                     saveData();
                     return interaction.update({ embeds: [bjEmbedUpdate(true).setDescription(msg)], components: [] });
                 }
+            } else if (interaction.customId === 'market_buy') {
+                const row = new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder().setCustomId('market_buy_select').setPlaceholder('Select asset to buy...')
+                        .addOptions([
+                            ...Object.keys(economyData.markets.stocks).map(s => ({ label: `Stock: ${s}`, value: `stock_${s}` })),
+                            ...Object.keys(economyData.markets.crypto).map(c => ({ label: `Crypto: ${c}`, value: `crypto_${c}` }))
+                        ])
+                );
+                await interaction.reply({ content: "What would you like to buy?", components: [row], ephemeral: true });
+            } else if (interaction.customId === 'market_sell') {
+                ensureUser(id);
+                const portfolio = economyData.users[id].portfolio;
+                const options = [];
+                for (const [s, amt] of Object.entries(portfolio.stocks)) if (amt > 0) options.push({ label: `Stock: ${s} (${amt})`, value: `stock_${s}` });
+                for (const [c, amt] of Object.entries(portfolio.crypto)) if (amt > 0) options.push({ label: `Crypto: ${c} (${amt})`, value: `crypto_${c}` });
+
+                if (options.length === 0) return interaction.reply({ content: "❌ You don't have any assets to sell!", ephemeral: true });
+                const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('market_sell_select').setPlaceholder('Select asset to sell...').addOptions(options));
+                await interaction.reply({ content: "What would you like to sell?", components: [row], ephemeral: true });
+            } else if (interaction.customId === 'market_portfolio') {
+                ensureUser(id);
+                const p = economyData.users[id].portfolio;
+                const embed = new EmbedBuilder().setTitle(`💼 ${interaction.user.username}'S PORTFOLIO`).setColor(0x2b2d31);
+                
+                let sVal = 0, cVal = 0;
+                let sList = "", cList = "";
+
+                for (const [s, amt] of Object.entries(p.stocks)) {
+                    if (amt <= 0) continue;
+                    const price = economyData.markets.stocks[s].price;
+                    sVal += amt * price;
+                    sList += `**${s}**: ${amt} shares (\`${(amt * price).toLocaleString()} Ryo\`)\n`;
+                }
+                for (const [c, amt] of Object.entries(p.crypto)) {
+                    if (amt <= 0) continue;
+                    const price = economyData.markets.crypto[c].price;
+                    cVal += amt * price;
+                    cList += `**${c}**: ${amt} units (\`${(amt * price).toLocaleString()} Ryo\`)\n`;
+                }
+
+                embed.addFields(
+                    { name: `📊 Stocks (Total: ${sVal.toLocaleString()} Ryo)`, value: sList || "None" },
+                    { name: `🪙 Crypto (Total: ${cVal.toLocaleString()} Ryo)`, value: cList || "None" },
+                    { name: '💰 Total Portfolio Value', value: `**${(sVal + cVal).toLocaleString()} Ryo**` }
+                );
+                await interaction.reply({ embeds: [embed], ephemeral: true });
+            } else if (interaction.customId.startsWith('loan_repay_')) {
+                ensureUser(id);
+                const loan = economyData.users[id].loan;
+                if (loan.amount <= 0) return interaction.reply({ content: "❌ You have no debt!", ephemeral: true });
+                
+                const totalDue = Math.floor(loan.amount * (1 + loan.interest / 100));
+                const repayAmt = interaction.customId === 'loan_repay_full' ? totalDue : Math.floor(totalDue / 2);
+                
+                if (economyData.users[id].ryo < repayAmt) return interaction.reply({ content: `❌ You don't have enough Ryo to repay ${repayAmt.toLocaleString()}!`, ephemeral: true });
+                
+                economyData.users[id].ryo -= repayAmt;
+                if (interaction.customId === 'loan_repay_full') {
+                    economyData.users[id].loan = { amount: 0, interest: 0 };
+                } else {
+                    // Reduce principal proportionately
+                    economyData.users[id].loan.amount = Math.max(0, economyData.users[id].loan.amount - Math.floor(repayAmt / (1 + loan.interest / 100)));
+                }
+                saveData();
+                await interaction.update({ content: `✅ Repaid **${repayAmt.toLocaleString()} Ryo** towards your debt!`, embeds: [], components: [] });
             }
 
-            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "❌ Staff only!", ephemeral: true });
+            if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
             if (interaction.customId === 'family_create') {
                 await interaction.reply({ content: "Type the name of the new family to create:", ephemeral: true });
                 const filter = m => m.author.id === interaction.user.id;
@@ -506,6 +674,38 @@ client.on(Events.InteractionCreate, async interaction => {
                 saveData();
                 const buyEmbed = new EmbedBuilder().setTitle("🤝 DEAL COMPLETE").setDescription(`You purchased **${item.name}** for **${item.price.toLocaleString()} Ryo**.`).addFields({ name: 'Remaining Balance', value: `🪙 **${economyData.users[id].ryo.toLocaleString()} Ryo**` }).setColor(RARITY_COLORS[item.rarity] || 0x00ff00).setFooter({ text: "The Dealer nods in approval." });
                 await interaction.reply({ embeds: [buyEmbed], ephemeral: true });
+            } else if (interaction.customId === 'market_buy_select' || interaction.customId === 'market_sell_select') {
+                const isBuy = interaction.customId === 'market_buy_select';
+                const [type, sym] = interaction.values[0].split('_');
+                const price = economyData.markets[type === 'stock' ? 'stocks' : 'crypto'][sym].price;
+                
+                await interaction.update({ content: `How many ${type === 'stock' ? 'shares' : 'units'} of **${sym}** would you like to ${isBuy ? 'buy' : 'sell'}? (Current Price: \`${price} Ryo\`)`, components: [] });
+                
+                const filter = m => m.author.id === interaction.user.id && !isNaN(parseInt(m.content));
+                const col = interaction.channel.createMessageCollector({ filter, time: 15000, max: 1 });
+                col.on('collect', m => {
+                    const amt = parseInt(m.content);
+                    if (amt <= 0) return m.reply("❌ Amount must be positive.");
+                    ensureUser(id);
+                    
+                    if (isBuy) {
+                        const cost = amt * price;
+                        if (economyData.users[id].ryo < cost) return m.reply("❌ You don't have enough Ryo!");
+                        economyData.users[id].ryo -= cost;
+                        const key = type === 'stock' ? 'stocks' : 'crypto';
+                        economyData.users[id].portfolio[key][sym] = (economyData.users[id].portfolio[key][sym] || 0) + amt;
+                        m.reply(`✅ Purchased **${amt}** of **${sym}** for **${cost.toLocaleString()} Ryo**.`);
+                    } else {
+                        const key = type === 'stock' ? 'stocks' : 'crypto';
+                        const owned = economyData.users[id].portfolio[key][sym] || 0;
+                        if (owned < amt) return m.reply("❌ You don't own that many!");
+                        const gain = amt * price;
+                        economyData.users[id].ryo += gain;
+                        economyData.users[id].portfolio[key][sym] -= amt;
+                        m.reply(`✅ Sold **${amt}** of **${sym}** for **${gain.toLocaleString()} Ryo**.`);
+                    }
+                    saveData();
+                });
             } else if (interaction.customId === 'family_select_manage') {
                 const familyName = interaction.values[0];
                 const family = economyData.families[familyName];
