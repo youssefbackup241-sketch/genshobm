@@ -342,14 +342,51 @@ client.on('messageCreate', async msg => {
             .addFields(
                 { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items\n`!market` - Stock & Crypto market\n`!debt` - View/Repay loans" },
                 { name: '🎰 Gambling', value: "`!bj [bet]` - Blackjack\n`!slots [bet]` - Casino Slots\n`!horse [bet] [1-5]` - Horse Racing\n`!race [bet] [1-5]` - Car Racing\n`!roulette [bet] [space]` - Roulette" },
-                { name: '🛡️ Staff', value: "`!staff @User` - Unified staff management dashboard\n`!familysetup` - Manage family pools\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
+                { name: '🛡️ Staff', value: "`!staff @User` - Unified staff management dashboard\n`!addryo @User [amt]` - Quick add Ryo\n`!removeryo @User [amt]` - Quick remove Ryo\n`!loan @User [amt] [int%] [days]` - Issue loan\n`!familysetup` - Manage family pools\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
             );
         return msg.reply({ embeds: [embed] });
-    } else if (cmd === 'staff') {
+    } else if (['staff', 'addryo', 'removeryo', 'wipeinv', 'loan'].includes(cmd)) {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
         const target = await findUser(msg, args);
-        if (!target) return msg.reply("❌ Please mention a user: `!staff @User`.");
+        if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount]\``);
         ensureUser(target.id);
+
+        if (cmd === 'addryo') {
+            const amount = parseInt(args[1]);
+            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+            economyData.users[target.id].ryo += amount;
+            saveData();
+            return msg.reply(`✅ Added **${amount.toLocaleString()} Ryo** to **${target.username}**.`);
+        } else if (cmd === 'removeryo') {
+            const amount = parseInt(args[1]);
+            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
+            economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
+            saveData();
+            return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
+        } else if (cmd === 'wipeinv') {
+            economyData.users[target.id].inventory = [];
+            saveData();
+            return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
+        } else if (cmd === 'loan') {
+            const amount = parseInt(args[1]);
+            const interest = parseInt(args[2]);
+            const days = parseInt(args[3]) || 7;
+            if (isNaN(amount) || isNaN(interest)) return msg.reply("❌ Usage: `!loan @User [amount] [interest%] [days]`");
+            
+            const totalWithInterest = Math.floor(amount * (1 + interest / 100));
+            const dailyPayment = Math.floor(totalWithInterest / days);
+            
+            economyData.users[target.id].loan = { 
+                amount: totalWithInterest, 
+                interest, 
+                lastUpdate: Date.now(),
+                dailyPayment,
+                totalPaid: 0
+            };
+            economyData.users[target.id].ryo += amount;
+            saveData();
+            return msg.reply(`💸 Issued a loan of **${amount.toLocaleString()} Ryo** to **${target.username}**.\n📅 **Plan**: ${interest}% interest over ${days} days.\n💰 **Daily Payment**: ${dailyPayment.toLocaleString()} Ryo.`);
+        }
 
         const embed = new EmbedBuilder()
             .setTitle("🛡️ STAFF MANAGEMENT DASHBOARD")
