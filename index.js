@@ -1,5 +1,9 @@
 // dealer.js - Genshō Black Market Dealer
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Events, StringSelectMenuBuilder, PermissionsBitField } = require('discord.js');
+const { 
+    Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, 
+    ButtonBuilder, ButtonStyle, Events, StringSelectMenuBuilder, 
+    PermissionsBitField, ModalBuilder, TextInputBuilder, TextInputStyle 
+} = require('discord.js');
 const fs = require('fs');
 
 // Initialize Discord Client
@@ -78,13 +82,13 @@ function saveData() {
 
 function ensureUser(id) {
     if (!economyData.users[id]) {
-        economyData.users[id] = { ryo: 0, inventory: [], portfolio: { stocks: {}, crypto: {} }, loan: { amount: 0, interest: 0 } };
+        economyData.users[id] = { ryo: 0, inventory: [], portfolio: { stocks: {}, crypto: {} }, loan: { amount: 0, interest: 0, lastUpdate: 0, dailyPayment: 0, totalPaid: 0 } };
     }
     if (!economyData.users[id].portfolio) {
         economyData.users[id].portfolio = { stocks: {}, crypto: {} };
     }
     if (!economyData.users[id].loan) {
-        economyData.users[id].loan = { amount: 0, interest: 0 };
+        economyData.users[id].loan = { amount: 0, interest: 0, lastUpdate: 0, dailyPayment: 0, totalPaid: 0 };
     }
 }
 
@@ -104,6 +108,38 @@ function updateMarkets() {
     }
     economyData.markets.lastUpdate = now;
     saveData();
+}
+
+// ----- DEBT ENFORCEMENT LOGIC -----
+function processDebt(userId) {
+    const user = economyData.users[userId];
+    if (!user.loan || user.loan.amount <= 0) return;
+
+    const now = Date.now();
+    const lastUpdate = user.loan.lastUpdate || now;
+    const hoursPassed = (now - lastUpdate) / (1000 * 60 * 60);
+
+    // Only update if at least 1 hour has passed
+    if (hoursPassed >= 1) {
+        // Interest accumulates hourly based on daily rate
+        const hourlyRate = (user.loan.interest / 100) / 24;
+        const interestGained = Math.floor(user.loan.amount * hourlyRate * hoursPassed);
+        
+        if (interestGained > 0) {
+            user.loan.amount += interestGained;
+            user.loan.lastUpdate = now;
+            
+            // Auto-collection: If user has Ryo, take it to pay debt
+            if (user.ryo > 0) {
+                const collection = Math.min(user.ryo, user.loan.amount);
+                user.ryo -= collection;
+                user.loan.amount -= collection;
+                user.loan.totalPaid = (user.loan.totalPaid || 0) + collection;
+                console.log(`[DEBT] Collected ${collection} Ryo from ${userId}`);
+            }
+            saveData();
+        }
+    }
 }
 
 // ----- ITEM DATABASE -----
@@ -206,6 +242,7 @@ client.on('messageCreate', async msg => {
     const id = msg.author.id;
     ensureUser(id);
     updateMarkets();
+    processDebt(id);
 
     if (cmd === 'ryo') {
         const target = await findUser(msg, args) || msg.author;
@@ -284,18 +321,20 @@ client.on('messageCreate', async msg => {
         const loan = economyData.users[id].loan;
         if (loan.amount <= 0) return msg.reply("✅ You have no outstanding debt!");
         
-        const totalDue = Math.floor(loan.amount * (1 + loan.interest / 100));
         const embed = new EmbedBuilder().setTitle("💸 YOUR DEBT").setColor(0xff0000)
             .setDescription(`You currently owe the Black Market Dealer:`)
             .addFields(
-                { name: 'Principal', value: `\`${loan.amount.toLocaleString()} Ryo\``, inline: true },
-                { name: 'Interest Rate', value: `\`${loan.interest}%\``, inline: true },
-                { name: 'Total Due', value: `\`${totalDue.toLocaleString()} Ryo\``, inline: true }
-            );
+                { name: 'Current Balance', value: `\`${loan.amount.toLocaleString()} Ryo\``, inline: true },
+                { name: 'Interest Rate', value: `\`${loan.interest}% Daily\``, inline: true },
+                { name: 'Required Daily', value: `\`${(loan.dailyPayment || 0).toLocaleString()} Ryo\``, inline: true },
+                { name: 'Total Repaid', value: `\`${(loan.totalPaid || 0).toLocaleString()} Ryo\``, inline: true }
+            )
+            .setFooter({ text: "Warning: Ryo is auto-collected hourly from your balance to pay off debt." });
         
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('loan_repay_full').setLabel('Repay Full').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('loan_repay_half').setLabel('Repay Half').setStyle(ButtonStyle.Primary)
+            new ButtonBuilder().setCustomId('loan_repay_half').setLabel('Repay Half').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('loan_repay_daily').setLabel('Pay Daily Amount').setStyle(ButtonStyle.Secondary)
         );
         return msg.reply({ embeds: [embed], components: [row] });
     } else if (cmd === 'bmcmd') {
@@ -303,9 +342,39 @@ client.on('messageCreate', async msg => {
             .addFields(
                 { name: '💰 Economy', value: "`!shop` - Open the shop\n`!ryo` - Check your balance\n`!baltop` - View richest players\n`!inv` - View your items\n`!market` - Stock & Crypto market\n`!debt` - View/Repay loans" },
                 { name: '🎰 Gambling', value: "`!bj [bet]` - Blackjack\n`!slots [bet]` - Casino Slots\n`!horse [bet] [1-5]` - Horse Racing\n`!race [bet] [1-5]` - Car Racing\n`!roulette [bet] [space]` - Roulette" },
-                { name: '🛡️ Staff', value: "`!addryo @User [amt]` - Add Ryo\n`!removeryo @User [amt]` - Remove Ryo\n`!loan @User [amt] [int]` - Issue a loan\n`!wipeinv @User` - Clear inventory\n`!rotateshop` - Force new stock\n`!stock` - View all items\n`!familysetup` - Manage family pools" }
+                { name: '🛡️ Staff', value: "`!staff @User` - Unified staff management dashboard\n`!familysetup` - Manage family pools\n`!rotateshop` - Force new stock\n`!stock` - View all items" }
             );
         return msg.reply({ embeds: [embed] });
+    } else if (cmd === 'staff') {
+        if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
+        const target = await findUser(msg, args);
+        if (!target) return msg.reply("❌ Please mention a user: `!staff @User`.");
+        ensureUser(target.id);
+
+        const embed = new EmbedBuilder()
+            .setTitle("🛡️ STAFF MANAGEMENT DASHBOARD")
+            .setDescription(`Managing user: **${target.username}**\nID: \`${target.id}\``)
+            .addFields(
+                { name: '💰 Ryo', value: `\`${economyData.users[target.id].ryo.toLocaleString()} Ryo\``, inline: true },
+                { name: '💸 Debt', value: `\`${economyData.users[target.id].loan.amount.toLocaleString()} Ryo\``, inline: true }
+            )
+            .setColor(0x2b2d31)
+            .setThumbnail(target.displayAvatarURL());
+
+        const row1 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`staff_addryo_${target.id}`).setLabel('Add Ryo').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`staff_removeryo_${target.id}`).setLabel('Remove Ryo').setStyle(ButtonStyle.Danger),
+            new ButtonBuilder().setCustomId(`staff_wipeinv_${target.id}`).setLabel('Wipe Inventory').setStyle(ButtonStyle.Secondary)
+        );
+
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`staff_loan_${target.id}`).setLabel('Issue Loan').setStyle(ButtonStyle.Primary).setEmoji('💸')
+        );
+
+        return msg.reply({ embeds: [embed], components: [row1, row2] });
+    } else if (cmd === 'loan') {
+        // Redirect old !loan to new !staff command
+        return msg.reply("💡 Use `!staff @User` to issue a loan and manage other economy features!");
     } else if (cmd === 'familysetup') {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
         const embed = new EmbedBuilder()
@@ -320,7 +389,7 @@ client.on('messageCreate', async msg => {
             new ButtonBuilder().setCustomId('family_access').setLabel('Manage Access').setStyle(ButtonStyle.Secondary).setEmoji('👥')
         );
         return msg.reply({ embeds: [embed], components: [row] });
-    } else if (['addryo', 'removeryo', 'rotateshop', 'wipeinv', 'stock', 'loan'].includes(cmd)) {
+    } else if (['rotateshop', 'stock'].includes(cmd)) {
         if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return msg.reply("❌ Staff only!");
         if (cmd === 'rotateshop') { rotateShop(); return msg.reply("✅ Shop has been forcefully rotated!"); }
         if (cmd === 'stock') {
@@ -331,35 +400,6 @@ client.on('messageCreate', async msg => {
             saveData();
             updateLiveStock();
             return;
-        }
-        const target = await findUser(msg, args);
-        if (!target) return msg.reply(`❌ Usage: \`!${cmd} @User [amount] [interest (for loans)]\``);
-        ensureUser(target.id);
-        
-        if (cmd === 'addryo') {
-            const amount = parseInt(args[1]);
-            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
-            economyData.users[target.id].ryo += amount;
-            saveData();
-            return msg.reply(`✅ Added **${amount.toLocaleString()} Ryo** to **${target.username}**.`);
-        } else if (cmd === 'removeryo') {
-            const amount = parseInt(args[1]);
-            if (isNaN(amount)) return msg.reply("❌ Provide a valid amount.");
-            economyData.users[target.id].ryo = Math.max(0, economyData.users[target.id].ryo - amount);
-            saveData();
-            return msg.reply(`✅ Removed **${amount.toLocaleString()} Ryo** from **${target.username}**.`);
-        } else if (cmd === 'loan') {
-            const amount = parseInt(args[1]);
-            const interest = parseInt(args[2]);
-            if (isNaN(amount) || isNaN(interest)) return msg.reply("❌ Usage: `!loan @User [amount] [interest%]`");
-            economyData.users[target.id].loan = { amount, interest };
-            economyData.users[target.id].ryo += amount;
-            saveData();
-            return msg.reply(`💸 Issued a loan of **${amount.toLocaleString()} Ryo** to **${target.username}** with **${interest}%** interest.`);
-        } else if (cmd === 'wipeinv') {
-            economyData.users[target.id].inventory = [];
-            saveData();
-            return msg.reply(`✅ Wiped inventory for **${target.username}**.`);
         }
     }
 
@@ -486,7 +526,75 @@ client.on('messageCreate', async msg => {
 client.on(Events.InteractionCreate, async interaction => {
     try {
         const id = interaction.user.id;
+        
+        // Handle Modals
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId.startsWith('modal_staff_')) {
+                const [_, __, action, targetId] = interaction.customId.split('_');
+                ensureUser(targetId);
+                const val = interaction.fields.getTextInputValue('input_value');
+                const num = parseInt(val);
+                
+                if (action === 'addryo') {
+                    if (isNaN(num)) return interaction.reply({ content: "❌ Invalid number!", ephemeral: true });
+                    economyData.users[targetId].ryo += num;
+                    saveData();
+                    return interaction.reply({ content: `✅ Added **${num.toLocaleString()} Ryo** to <@${targetId}>.` });
+                } else if (action === 'removeryo') {
+                    if (isNaN(num)) return interaction.reply({ content: "❌ Invalid number!", ephemeral: true });
+                    economyData.users[targetId].ryo = Math.max(0, economyData.users[targetId].ryo - num);
+                    saveData();
+                    return interaction.reply({ content: `✅ Removed **${num.toLocaleString()} Ryo** from <@${targetId}>.` });
+                } else if (action === 'loan') {
+                    const interest = parseInt(interaction.fields.getTextInputValue('input_interest'));
+                    const days = parseInt(interaction.fields.getTextInputValue('input_days')) || 7;
+                    if (isNaN(num) || isNaN(interest)) return interaction.reply({ content: "❌ Invalid inputs!", ephemeral: true });
+                    
+                    const totalWithInterest = Math.floor(num * (1 + interest / 100));
+                    const dailyPayment = Math.floor(totalWithInterest / days);
+                    
+                    economyData.users[targetId].loan = { 
+                        amount: totalWithInterest, 
+                        interest, 
+                        lastUpdate: Date.now(),
+                        dailyPayment,
+                        totalPaid: 0
+                    };
+                    economyData.users[targetId].ryo += num;
+                    saveData();
+                    return interaction.reply({ content: `💸 Issued a loan of **${num.toLocaleString()} Ryo** to <@${targetId}>.\n📅 **Plan**: ${interest}% interest over ${days} days.\n💰 **Daily Payment**: ${dailyPayment.toLocaleString()} Ryo.` });
+                }
+            }
+        }
+
         if (interaction.isButton()) {
+            // Staff Management Buttons
+            if (interaction.customId.startsWith('staff_')) {
+                if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: "Unauthorized!", ephemeral: true });
+                const [_, action, targetId] = interaction.customId.split('_');
+
+                if (action === 'wipeinv') {
+                    economyData.users[targetId].inventory = [];
+                    saveData();
+                    return interaction.reply({ content: `✅ Wiped inventory for <@${targetId}>.` });
+                }
+
+                const modal = new ModalBuilder().setCustomId(`modal_staff_${action}_${targetId}`);
+                const input = new TextInputBuilder().setCustomId('input_value').setLabel('Amount').setStyle(TextInputStyle.Short).setRequired(true);
+                
+                if (action === 'loan') {
+                    modal.setTitle('Configure Loan');
+                    input.setLabel('Principal Amount');
+                    const interestInput = new TextInputBuilder().setCustomId('input_interest').setLabel('Interest %').setStyle(TextInputStyle.Short).setRequired(true);
+                    const daysInput = new TextInputBuilder().setCustomId('input_days').setLabel('Duration (Days)').setStyle(TextInputStyle.Short).setValue('7');
+                    modal.addComponents(new ActionRowBuilder().addComponents(input), new ActionRowBuilder().addComponents(interestInput), new ActionRowBuilder().addComponents(daysInput));
+                } else {
+                    modal.setTitle(action === 'addryo' ? 'Add Ryo' : 'Remove Ryo');
+                    modal.addComponents(new ActionRowBuilder().addComponents(input));
+                }
+                return await interaction.showModal(modal);
+            }
+
             if (interaction.customId.startsWith('bj_')) {
                 const [_, action, originalId, betStr] = interaction.customId.split('_');
                 if (id !== originalId) return interaction.reply({ content: "Unauthorized!", ephemeral: true });
@@ -621,17 +729,20 @@ client.on(Events.InteractionCreate, async interaction => {
                 const loan = economyData.users[id].loan;
                 if (loan.amount <= 0) return interaction.reply({ content: "❌ You have no debt!", ephemeral: true });
                 
-                const totalDue = Math.floor(loan.amount * (1 + loan.interest / 100));
-                const repayAmt = interaction.customId === 'loan_repay_full' ? totalDue : Math.floor(totalDue / 2);
+                let repayAmt = 0;
+                if (interaction.customId === 'loan_repay_full') repayAmt = loan.amount;
+                else if (interaction.customId === 'loan_repay_half') repayAmt = Math.floor(loan.amount / 2);
+                else if (interaction.customId === 'loan_repay_daily') repayAmt = loan.dailyPayment || 0;
                 
+                if (repayAmt <= 0) return interaction.reply({ content: "❌ Invalid repayment amount!", ephemeral: true });
                 if (economyData.users[id].ryo < repayAmt) return interaction.reply({ content: `❌ You don't have enough Ryo to repay ${repayAmt.toLocaleString()}!`, ephemeral: true });
                 
                 economyData.users[id].ryo -= repayAmt;
-                if (interaction.customId === 'loan_repay_full') {
-                    economyData.users[id].loan = { amount: 0, interest: 0 };
-                } else {
-                    // Reduce principal proportionately
-                    economyData.users[id].loan.amount = Math.max(0, economyData.users[id].loan.amount - Math.floor(repayAmt / (1 + loan.interest / 100)));
+                economyData.users[id].loan.amount -= repayAmt;
+                economyData.users[id].loan.totalPaid = (economyData.users[id].loan.totalPaid || 0) + repayAmt;
+                
+                if (economyData.users[id].loan.amount <= 0) {
+                    economyData.users[id].loan = { amount: 0, interest: 0, lastUpdate: 0, dailyPayment: 0, totalPaid: 0 };
                 }
                 saveData();
                 await interaction.update({ content: `✅ Repaid **${repayAmt.toLocaleString()} Ryo** towards your debt!`, embeds: [], components: [] });
